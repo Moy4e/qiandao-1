@@ -16,7 +16,9 @@ from base import *
 
 class HAREditor(BaseHandler):
     def get(self, id=None):
-        return self.render('har/editor.html', tplid=id)
+        harurl = self.get_argument("tplurl", "")
+        harname = self.get_argument("name", "")
+        return self.render('har/editor.html', tplid=id, harpath=harurl, harname=harname)
 
     def post(self, id):
         user = self.current_user
@@ -99,7 +101,7 @@ class HARSave(BaseHandler):
     @tornado.web.authenticated
     def post(self, id):
         self.evil(+1)
-
+        tplurl = self.get_argument("tplurl", "")
         userid = self.current_user['id']
         data = json.loads(self.request.body)
 
@@ -126,11 +128,13 @@ class HARSave(BaseHandler):
 
         setting = data.get('setting', {})
         self.db.tpl.mod(id,
+                tplurl = tplurl,
                 sitename=setting.get('sitename'),
                 siteurl=setting.get('siteurl'),
                 note=setting.get('note'),
                 interval=setting.get('interval') or None,
-                mtime=time.time())
+                mtime=time.time(),
+                updateable=0)
         self.finish({
             'id': id
             })

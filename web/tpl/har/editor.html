@@ -14,7 +14,10 @@
 <script>
   TPLID={{ tplid or 0 }};
   HASUSER={{ 1 if current_user else 0 }};
+  HARPATH = "{{ harpath }}";
+  HARNAME = "{{ harname }}";
 </script>
+
 {% raw %}
 <div class="container">
   <div class="row" ng-controller="EntryList">
@@ -137,6 +140,7 @@
       <!-- ./entries list -->
 
       <div class="text-right">
+        <button class="btn btn-default" data-toggle="modal" data-target="#upload-har" >追加HAR</button>
         <a id="download-har" target="_blank" class="btn btn-default" ng-click="download()">下载</a>
         <button class="btn btn-default" data-toggle="modal" data-target="#test-har" ng-click="pre_save()">测试</button>
         <button ng-if="!readonly" class="btn btn-primary" data-toggle="modal" data-target="#save-har" ng-click="pre_save()">保存</button>
@@ -274,7 +278,7 @@
           <div class="alert alert-info" role="alert" ng-if="local_har">
             您有一个正在编辑的 HAR 文件（{{ local_har }}），是否打开？
             <a href="javascript:void(0);" ng-click="load_local_har()">[ 打开 ]</a> /
-            <a href="javascript:void(0);" ng-click="delete_local()">[ 删除 ]</a>
+            <a href="javascript:void(0);" ng-click="delete_local()">[ 删除 ]</a> 
           </div>
           <div class="form-horizontal" role="form">
             <div class="form-group">
@@ -300,6 +304,7 @@
           </div>
         </div>
         <div class="modal-footer">
+          <button type="button" class="btn btn-primary" data-loading-text="Loading..." ng-click="add_local()">追加</button>
           <button type="button" class="btn btn-primary" data-loading-text="Loading..." ng-click="upload()">上传</button>
         </div>
       </div>

@@ -11,35 +11,30 @@ from tornado import gen
 import datetime 
 import pytz
 import send2phone
+import random
 
 from base import *
 
 def calNextTimestamp(etime, todayflg):
     tz = pytz.timezone('Asia/Shanghai')
     now = datetime.datetime.now()
-    now = datetime.datetime(year=now.year, 
-                            month=now.month, 
-                            day=now.day, 
-                            hour=now.hour, 
-                            minute=now.minute, 
-                            tzinfo=tz)
-    temp = etime.split(":")
-    if (todayflg):
-        eday = now.day
+    now_ts = int(time.time())
+    zero = datetime.datetime(year=now.year, month=now.month, day=now.day,  hour=0,  minute=0, second=0, tzinfo=tz)
+    zero_ts = int(time.mktime(zero.timetuple()) + zero.microsecond/1e6)
+    temp = etime["time"].split(":")
+    e_ts = int(temp[0]) * 3600 + int(temp[1]) * 60 + int(temp[2])
+    
+    if (etime['sw'] and etime['randsw']):
+        r_ts = random.randint(etime['tz1'], etime['tz2'])
     else:
-        eday = now.day+1
-    ehour = int(temp[0])
-    emin = int(temp[1])
-    esecond = int(temp[2])
-    pre = datetime.datetime(year=now.year, 
-                            month=now.month, 
-                            day=eday, 
-                            hour=ehour, 
-                            minute=emin,
-                            second=esecond,
-                            tzinfo=tz)
-    next = int(time.mktime(pre.timetuple()) + pre.microsecond/1e6)
-    return next
+        r_ts = 0
+        
+    next_ts = zero_ts + e_ts
+    if  (now_ts > next_ts) or (todayflg):
+        next_ts = next_ts + (24 * 60 * 60)
+        
+    next_ts = next_ts + r_ts
+    return next_ts
 
 class TaskNewHandler(BaseHandler):    
     def get(self):
@@ -63,8 +58,14 @@ class TaskNewHandler(BaseHandler):
 
         tpl = self.check_permission(self.db.tpl.get(tplid, fields=('id', 'userid', 'note', 'sitename', 'siteurl', 'variables')))
         variables = json.loads(tpl['variables'])
+
+        groups = []
+        for task in self.db.task.list(user['id'], fields=('groups'), limit=None):
+            temp = task['groups']
+            if (temp not  in groups):
+                groups.append(temp)
         
-        self.render('task_new.html', tpls=tpls, tplid=tplid, tpl=tpl, variables=variables, task={})
+        self.render('task_new.html', tpls=tpls, tplid=tplid, tpl=tpl, variables=variables, task={}, groups=groups)
 
     @tornado.web.authenticated
     def post(self, taskid=None):
@@ -83,6 +84,20 @@ class TaskNewHandler(BaseHandler):
                 continue
             env[key] = self.get_body_argument(key)
 
+        if ('New_group' in self.request.body_arguments):
+            New_group = self.request.body_arguments['New_group'][0].strip()
+            
+            if New_group != "" :
+                target_group = New_group.decode("utf-8").encode("utf-8")
+            else:
+                for value in self.request.body_arguments:
+                    if self.request.body_arguments[value][0] == 'on':
+                        if (value.find("group-select-") > -1):
+                            target_group = value.replace("group-select-", "").strip()
+                            break
+                    else:
+                        target_group = 'None'
+
         if not taskid:
             env = self.db.user.encrypt(user['id'], env)
             taskid = self.db.task.add(tplid, user['id'], env)
@@ -98,8 +113,10 @@ class TaskNewHandler(BaseHandler):
             init_env.update(env)
             init_env = self.db.user.encrypt(user['id'], init_env)
             self.db.task.mod(taskid, init_env=init_env, env=None, session=None, note=note)
+        
+        if ('New_group' in self.request.body_arguments):
+            self.db.task.mod(taskid, groups=target_group)
 
-        #referer = self.request.headers.get('referer', '/my/')
         self.redirect('/my/')
 
 class TaskEditHandler(TaskNewHandler):
@@ -124,7 +141,7 @@ class TaskRunHandler(BaseHandler):
         user = self.current_user
         task = self.check_permission(self.db.task.get(taskid, fields=('id', 'tplid', 'userid', 'init_env',
             'env', 'session', 'last_success', 'last_failed', 'success_count',
-            'failed_count', 'last_failed_count', 'next', 'disabled', 'ontime', 'ontimeflg')), 'w')
+            'failed_count', 'last_failed_count', 'next', 'disabled', 'ontime', 'ontimeflg', 'pushsw','newontime')), 'w')
 
         tpl = self.check_permission(self.db.tpl.get(task['tplid'], fields=('id', 'userid', 'sitename',
             'siteurl', 'tpl', 'interval', 'last_success')))
@@ -143,24 +160,33 @@ class TaskRunHandler(BaseHandler):
         pushno2b = send2phone.send2phone(barkurl=notice['barkurl'])
         pushno2s = send2phone.send2phone(skey=notice['skey'])
         pushno2w = send2phone.send2phone(wxpusher_token=wxpusher_token, wxpusher_uid=wxpusher_uid)
+        pusher =  {}
+        pusher["barksw"] = False if (notice['noticeflg'] & 0x40) == 0 else True 
+        pusher["schansw"] = False if (notice['noticeflg'] & 0x20) == 0 else True 
+        pusher["wxpushersw"] = False if (notice['noticeflg'] & 0x10) == 0 else True 
+        taskpushsw = json.loads(task['pushsw'])
+        newontime = json.loads(task['newontime'])
 
         try:
             new_env = yield self.fetcher.do_fetch(fetch_tpl, env)
         except Exception as e:
-            if (notice['noticeflg'] & 0x4 != 0):
+            if (notice['noticeflg'] & 0x4 != 0) and (taskpushsw['pushen']):
                 t = datetime.datetime.now().strftime('%m-%d %H:%M:%S')
                 title = u"签到任务 {0} 手动运行失败".format(tpl['sitename'])
-                pushno2b.send2bark(title, u"{0} 请排查原因".format(t, e))
-                pushno2s.send2s(title, u"{0} 日志：{1}".format(t, e))
-                pushno2w.send2wxpusher(title+u"{0} 日志：{1}".format(t, e))
+                if pusher["barksw"]:
+                    pushno2b.send2bark(title, u"{0} 请排查原因".format(e))
+                if pusher["schansw"]:
+                    pushno2s.send2s(title, u"{0} 日志：{1}".format(t, e))
+                if pusher["wxpushersw"]:
+                    pushno2w.send2wxpusher(title+u"{0} 日志：{1}".format(t, e))
                 
             self.db.tasklog.add(task['id'], success=False, msg=unicode(e))
             self.finish('<h1 class="alert alert-danger text-center">签到失败</h1><div class="well">%s</div>' % e)
             return
 
         self.db.tasklog.add(task['id'], success=True, msg=new_env['variables'].get('__log__'))
-        if (task["ontimeflg"] == 1):
-            nextTime = calNextTimestamp(task["ontime"], todayflg=False)
+        if (newontime["sw"]):
+            nextTime = calNextTimestamp(newontime, True)
         else:
             nextTime = time.time() + (tpl['interval'] if tpl['interval'] else 24 * 60 * 60)
             
@@ -172,12 +198,15 @@ class TaskRunHandler(BaseHandler):
                 mtime = time.time(),
                 next = nextTime)
         
-        if (notice['noticeflg'] & 0x8 != 0):
+        if (notice['noticeflg'] & 0x8 != 0) and (taskpushsw['pushen']):
             t = datetime.datetime.now().strftime('%m-%d %H:%M:%S')
             title = u"签到任务 {0} 手动运行成功".format(tpl['sitename'])
-            pushno2b.send2bark(title, u"{0} 成功".format(t))
-            pushno2s.send2s(title, u"{0} 成功".format(t))
-            pushno2w.send2wxpusher(title+u"{0}".format(t))
+            if pusher["barksw"]:
+                pushno2b.send2bark(title, u"{0} 成功".format(t))
+            if pusher["schansw"]:
+                pushno2s.send2s(title, u"{0} 成功".format(t))
+            if pusher["wxpushersw"]:
+                pushno2w.send2wxpusher(title+u"{0}".format(t))
         
         self.db.tpl.incr_success(tpl['id'])
         self.finish('<h1 class="alert alert-success text-center">签到成功</h1>')
@@ -198,8 +227,11 @@ class TaskDelHandler(BaseHandler):
     def post(self, taskid):
         user = self.current_user
         task = self.check_permission(self.db.task.get(taskid, fields=('id', 'userid', )), 'w')
-
+        logs = self.db.tasklog.list(taskid = taskid, fields=('id'))
+        for log in logs:
+            self.db.tasklog.delete(log['id'])
         self.db.task.delete(task['id'])
+        
         referer = self.request.headers.get('referer', '/my/')
         self.redirect(referer)
         
@@ -208,49 +240,88 @@ class TaskSetTimeHandler(TaskNewHandler):
     def get(self, taskid):
         user = self.current_user
         task = self.check_permission(self.db.task.get(taskid, fields=('id', 'userid',
-            'tplid', 'disabled', 'note', 'ontimeflg')), 'w')
-
-        tpl = self.check_permission(self.db.tpl.get(task['tplid'], fields=('id', 'userid', 'note',
-            'sitename', 'siteurl', 'variables')))
+            'tplid', 'disabled', 'note', 'ontime', 'ontimeflg', 'newontime')), 'w')
         
-        variables = json.loads(tpl['variables'])
-        todayflg = True if task['ontimeflg'] == 1 else False
-        now = datetime.datetime.now().strftime( '%H:%M:%S')
+        newonetime = json.loads(task['newontime'])
         
-        self.render('task_setTime.html', tpls=[tpl, ], tplid=tpl['id'], tpl=tpl, task=task, ontimeflg=todayflg, mintime=now)
+        self.render('task_setTime.html', task=task, newonetime=newonetime)
     
     @tornado.web.authenticated
     def post(self, taskid):
-        self.evil(+2)
-        
-        task = self.check_permission(self.db.task.get(taskid, fields=('id', 'tplid', 'userid', 'init_env',
-            'env', 'session', 'last_success', 'last_failed', 'success_count',
-            'failed_count', 'last_failed_count', 'next', 'disabled')), 'w')
-
-        tpl = self.check_permission(self.db.tpl.get(task['tplid'], fields=('id', 'userid', 'sitename',
+        try:
+            form = json.loads(self.request.body_arguments["env"][0])
+            task = self.db.task.get(taskid, fields=('tplid', "newontime"))
+            tpl = self.check_permission(self.db.tpl.get(task['tplid'], fields=('id', 'userid', 'sitename',
             'siteurl', 'tpl', 'interval', 'last_success')))
+            ontime_new = json.loads(task["newontime"])
+            
+            if  ('flg' in form):
+                ontime_new['sw'] = True
+                ontime = form['ontimevalue']
+                ontimetemp = ontime.split(":")
+                if (len(ontimetemp) < 3):
+                    ontime = ontime + ":00"     # 没有秒自动补零
+                    ontimetemp.append("00")
+                ontime_new['time'] = ontime
 
-        ontime = self.request.body_arguments['timevalue'][0]
-        temp = ontime.split(":")
-        if (len(temp) < 3):
-            ontime = ontime + ":00"     # 没有秒自动补零
+                if  ('randtimezonesw' in form):
+                    ontime_new['randsw'] = True
+                    tz1 = int(form['timezone1'])
+                    tz2 = int(form['timezone2'])
+                    if (tz1 <= tz2):
+                        ontime_new['tz1'] = tz1
+                        ontime_new['tz2'] = tz2
+                    else:
+                        raise Exception(u"随机时间开始要大于结束")
+                todayflg = True if ('todayflg' in form) else False
+                next_ts = calNextTimestamp(ontime_new, todayflg)
+            else :
+                ontime_new['sw'] = False
+                next_ts = time.time() + (tpl['interval'] if tpl['interval'] else 24 * 60 * 60)
+                    
+            self.db.task.mod(taskid,
+                    disabled = False,
+                    newontime = json.dumps(ontime_new),
+                    next = next_ts)
+            
+        except Exception as e:
+            self.render('tpl_run_failed.html', log=e)
+            return
         
-        if  ('flg' in self.request.body_arguments):
-            OntimeFlg = 1
-            if  ('todayflg' in self.request.body_arguments):
-                next = calNextTimestamp(ontime, todayflg=True)
-            else:
-                next = calNextTimestamp(ontime, todayflg=False)
-        else :
-            OntimeFlg = 0
-            next = time.time() + (tpl['interval'] if tpl['interval'] else 24 * 60 * 60)
+        self.render('tpl_run_success.html', log=u"设置完成")
+        return
         
-        self.db.task.mod(task['id'],
-                disabled = False,
-                ontime = ontime,
-                ontimeflg = OntimeFlg,
-                next = next)
-                
+        
+class TaskGroupHandler(TaskNewHandler):
+    @tornado.web.authenticated
+    def get(self, taskid):
+        user = self.current_user      
+        groupNow = self.db.task.get(taskid, fields=('groups'))['groups']
+        tasks = []
+        groups = []
+        for task in self.db.task.list(user['id'], fields=('groups'), limit=None):
+            temp = task['groups']
+            if (temp not  in groups):
+                groups.append(temp)
+
+        self.render('task_setgroup.html', taskid=taskid, groups=groups, groupNow=groupNow)
+    
+    @tornado.web.authenticated
+    def post(self, taskid):        
+        New_group = self.request.body_arguments['New_group'][0].strip()
+        
+        if New_group != "" :
+            target_group = New_group.decode("utf-8").encode("utf-8")
+        else:
+            for value in self.request.body_arguments:
+                if self.request.body_arguments[value][0] == 'on':
+                    target_group = value.strip()
+                    break
+                else:
+                    target_group = 'None'
+            
+        self.db.task.mod(taskid, groups=target_group)
+   
         self.redirect('/my/')
         
         
@@ -261,4 +332,5 @@ handlers = [
         ('/task/(\d+)/del', TaskDelHandler),
         ('/task/(\d+)/log', TaskLogHandler),
         ('/task/(\d+)/run', TaskRunHandler),
+        ('/task/(\d+)/group', TaskGroupHandler),
         ]

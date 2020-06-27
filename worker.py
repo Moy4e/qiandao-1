@@ -13,6 +13,7 @@ import tornado.log
 import tornado.ioloop
 from tornado import gen
 import send2phone
+import json
 
 import config
 from libs import utils
@@ -21,6 +22,7 @@ from libs.fetcher import Fetcher
 from web.handlers.task import calNextTimestamp
 
 logger = logging.getLogger('qiandao.worker')
+
 class MainWorker(object):
     def __init__(self):
         self.running = False
@@ -49,7 +51,7 @@ class MainWorker(object):
                 logger.info('%d task done. %d success, %d failed' % (success+failed, success, failed))
             return
         self.running.add_done_callback(done)
-
+      
     @gen.coroutine
     def run(self):
         running = []
@@ -133,16 +135,21 @@ class MainWorker(object):
         user = self.db.user.get(task['userid'], fields=('id', 'email', 'email_verified', 'nickname'))
         tpl = self.db.tpl.get(task['tplid'], fields=('id', 'userid', 'sitename', 'siteurl', 'tpl',
             'interval', 'last_success'))
-        ontime = self.db.task.get(task['id'], fields=('ontime', 'ontimeflg'))
-        
+        ontime = self.db.task.get(task['id'], fields=('ontime', 'ontimeflg', 'pushsw', 'newontime'))
+        newontime = json.loads(ontime["newontime"])
+        pushsw = json.loads(ontime['pushsw'])
         notice = self.db.user.get(task['userid'], fields=('skey', 'barkurl', 'noticeflg', 'wxpusher'))
         temp = notice['wxpusher'].split(";")
         wxpusher_token = temp[0] if (len(temp) >= 2) else ""
         wxpusher_uid = temp[1] if (len(temp) >= 2) else "" 
         pushno2b = send2phone.send2phone(barkurl=notice['barkurl'])
         pushno2s = send2phone.send2phone(skey=notice['skey'])
-        pushno2w = send2phone.send2phone(wxpusher_token=wxpusher_token, wxpusher_uid=wxpusher_uid)               
-        
+        pushno2w = send2phone.send2phone(wxpusher_token=wxpusher_token, wxpusher_uid=wxpusher_uid)
+        pusher =  {}
+        pusher["barksw"] = False if (notice['noticeflg'] & 0x40) == 0 else True 
+        pusher["schansw"] = False if (notice['noticeflg'] & 0x20) == 0 else True 
+        pusher["wxpushersw"] = False if (notice['noticeflg'] & 0x10) == 0 else True 
+
         if task['disabled']:
             self.db.tasklog.add(task['id'], False, msg='task disabled.')
             self.db.task.mod(task['id'], next=None, disabled=1)
@@ -178,8 +185,8 @@ class MainWorker(object):
                     new_env['session'].to_json() if hasattr(new_env['session'], 'to_json') else new_env['session'])
 
             # todo next not mid night
-            if (ontime['ontimeflg'] == 1):
-                next = calNextTimestamp(ontime['ontime'], todayflg=False)
+            if (newontime['sw']):
+                next = calNextTimestamp(newontime, True)
             else:
                 next = time.time() + max((tpl['interval'] if tpl['interval'] else 24 * 60 * 60), 1*60)
                 if tpl['interval'] is None:
@@ -200,9 +207,10 @@ class MainWorker(object):
                 t = datetime.datetime.now().strftime('%m-%d %H:%M:%S')
                 title = u"签到任务 {0} 成功".format(tpl['sitename'])
                 logtemp = new_env['variables'].get('__log__')
-                pushno2b.send2bark(title, u"{0} 运行成功".format(t))
-                pushno2s.send2s(title, u"{0}  日志：{1}".format(t, logtemp))
-                pushno2w.send2wxpusher(title+u"{0}  日志：{1}".format(t, logtemp))
+                if (notice['noticeflg'] & 0x2 != 0) and (pushsw['pushen']):
+                    if (pusher["barksw"]):pushno2b.send2bark(title, u"{0} 运行成功".format(t))
+                    if (pusher["schansw"]):pushno2s.send2s(title, u"{0}  日志：{1}".format(t, logtemp))
+                    if (pusher["wxpushersw"]):pushno2w.send2wxpusher(title+u"{0}  日志：{1}".format(t, logtemp))
             logger.info('taskid:%d tplid:%d successed! %.4fs', task['id'], task['tplid'], time.time()-start)
         except Exception as e:
             # failed feedback
@@ -210,12 +218,13 @@ class MainWorker(object):
                         
             t = datetime.datetime.now().strftime('%m-%d %H:%M:%S')
             title = u"签到任务 {0} 失败".format(tpl['sitename'])
+            content = u"日志：{log}".format(log=e)
             if next_time_delta:
                 # 每次都推送通知
-                if (notice['noticeflg'] & 1 == 1):
-                    pushno2b.send2bark(title, u"{0} 请检查状态".format(t))
-                    pushno2s.send2s(title, u"{0} 请进行排查".format(t))
-                    pushno2w.send2wxpusher(title+u"{0}  请进行排查".format(t))
+                if (notice['noticeflg'] & 0x1 == 1) and (pushsw['pushen']):
+                    if (pusher["barksw"]):pushno2b.send2bark(title, u"请自行排查")
+                    if (pusher["schansw"]):pushno2s.send2s(title, content)
+                    if (pusher["wxpushersw"]):pushno2w.send2wxpusher(title+u"  "+content)
                 disabled = False
                 next = time.time() + next_time_delta
             else:
@@ -223,9 +232,9 @@ class MainWorker(object):
                 next = None
                 # 任务禁用时发送通知
                 if (notice['noticeflg'] & 1 == 1):
-                    pushno2b.send2bark(title, u"任务已禁用")
-                    pushno2s.send2s(title, u"任务已禁用")
-                    pushno2w.send2wxpusher(title+u"任务已禁用")
+                    if (pusher["barksw"]):pushno2b.send2bark(title, u"任务已禁用")
+                    if (pusher["schansw"]):pushno2s.send2s(title, u"任务已禁用")
+                    if (pusher["wxpushersw"]):pushno2w.send2wxpusher(title+u"任务已禁用")
 
             self.db.tasklog.add(task['id'], success=False, msg=unicode(e))
             self.db.task.mod(task['id'],

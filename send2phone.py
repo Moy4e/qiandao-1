@@ -24,7 +24,7 @@ class send2phone:
             try:
                 if (self.barklink[-1:] == u"/"):
                     self.barklink = self.barklink[0: len(self.barklink)-1]
-                msg = u"{0}/推送标题/{1}/'{2}'".format(self.barklink, title, content)
+                msg = u"{0}/推送标题/{1}/{2}?isArchive=1".format(self.barklink, title, content)
                 res = requests.get(msg,verify=False)
             except Exception as e:
                 print('Reason:', e)
@@ -58,8 +58,3 @@ class send2phone:
             except Exception as e:
                 print('Reason:', e)
         return    
-    
-if __name__ == "__main__":
-    pushno.send2wxpusher("签到任务 {0} 失败 任务已禁用".format('test') )
-    pushno.send2bark("签到任务 {0} 失败".format('test'), "任务已禁用")
-    pushno.send2s("签到任务 {0} 失败".format('test'), "任务已禁用")
