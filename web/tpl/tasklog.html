@@ -14,6 +14,10 @@
   <div class="container">
     <h2>
       任务执行日志
+      <span type="span" class="btn btn-default">
+        <a data-method="GET" href="/task/{{ task.id }}/log/del" title="清空任务日志">删除
+        </a>
+      </span>
     </h2>
 	<table class="table">
       <thead>
@@ -34,7 +38,7 @@
             <span class="text-danger">失败</span>
             {% endif %}
           </td>
-          <td>{{ log.msg }}</td>
+          <td class="autowrap">{{ log.msg }}<button class="btn hljs-button" data-clipboard-text="{{ log.msg }}">复制</button></td>
         </tr>
         {% endfor %}
       </tbody>
