@@ -15,6 +15,9 @@
     <label>
       <input type="checkbox" id="wxpushersw" name="wxpushersw" {% if flg.wxpushersw %}  checked="" {% endif %}> WXPusher
     </label>
+    <label>
+      <input type="checkbox" id="mailpushersw" name="mailpushersw" {% if flg.mailpushersw %}  checked="" {% endif %}> 邮箱
+    </label>
   </div>
 
   <label>任务结果通知时间选择</label>
@@ -61,21 +64,18 @@
   
             {% if task.note %}
             -
-              <code>{% if task.note | length > 15 %}</code>
-              <span data-toggle="popover" data-content="{{ task.note }}">{{ task.note or '' | truncate(10, True) }}</span>
-              {% else %} {{ task.note }} {% endif %}
-            {% endif %}
+                <code>
+                  {% if task.note | length > 15 %}
+                <span data-toggle="popover" data-content="{{ task.note }}">{{ task.note | truncate(10, True) }}</span>
+                {% else %} {{ task.note }} {% endif %}
+                  {% endif %}
+                </code>
           </td>
           <td>
             <label>
               <input type="checkbox" name="{{ task.id }} pushen" {% if task.pushsw.pushen %}  checked="" {% endif %} value="1">
             </label>
           </td>
-          <!-- <td>
-            <label>
-              <input type="checkbox" name="{{ task.id }} logen" {% if task.pushsw.logen %}  checked="" {% endif %} value="1">
-            </label>
-          </td> -->
         </tr>
         {% endfor %}
       </tbody>
@@ -96,7 +96,6 @@
         for (var _env=$('form').serializeArray(), i=_env.length-1; i>=0; i--) {
           env[_env[i].name] = _env[i].value;
         }
-
         var data = {
           env: JSON.stringify(env)
           }
@@ -132,6 +131,14 @@
       }
       document.getElementById("ErrTolerateCnt")[{{ logtime.ErrTolerateCnt }}].selected=true;
   </script>
+
+<script>
+  $(function() {
+    $('[data-toggle=popover]').popover({
+      trigger: 'hover'
+    });
+  })
+</script>
 
   {{ utils.submit_loading() }}
 </form>

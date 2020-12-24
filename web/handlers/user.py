@@ -10,6 +10,7 @@ import time
 import datetime
 from tornado import gen
 import re
+import os
 
 import config
 from base import *
@@ -20,6 +21,8 @@ import send2phone
 from web.handlers.task import calNextTimestamp
 
 from backup import DBnew
+
+import codecs
 
 def tostr(s):
     if isinstance(s, bytearray):
@@ -122,7 +125,8 @@ class UserRegPushSw(BaseHandler):
         flg = {}
         flg['barksw']        = False if ((temp & 0x40) == 0) else True 
         flg['schansw']       = False if ((temp & 0x20) == 0) else True 
-        flg['wxpushersw']    = False if ((temp & 0x10) == 0) else True 
+        flg['wxpushersw']    = False if ((temp & 0x10) == 0) else True
+        flg['mailpushersw']    = False if ((temp & 0x80) == 0) else True 
         flg['handpush_succ'] = False if ((temp & 0x08) == 0) else True 
         flg['handpush_fail'] = False if ((temp & 0x04) == 0) else True 
         flg['autopush_succ'] = False if ((temp & 0x02) == 0) else True 
@@ -131,6 +135,7 @@ class UserRegPushSw(BaseHandler):
         if 'schanEN' not in logtime:logtime['schanEN'] = False
         if 'WXPEn' not in logtime:logtime['WXPEn'] = False
         if 'ErrTolerateCnt' not in logtime:logtime['ErrTolerateCnt'] = 0
+        
 
         self.render('user_register_pushsw.html', userid=userid, flg=flg, tasks=tasks, logtime=logtime)
 
@@ -157,13 +162,15 @@ class UserRegPushSw(BaseHandler):
 
             barksw_flg        = 1 if ("barksw" in env) else 0 
             schansw_flg       = 1 if ("schansw" in env) else 0 
-            wxpushersw_flg    = 1 if ("wxpushersw" in env) else 0 
+            wxpushersw_flg    = 1 if ("wxpushersw" in env) else 0
+            mailpushersw_flg    = 1 if ("mailpushersw" in env) else 0 
             handpush_succ_flg = 1 if ("handpush_succ" in env) else 0
             handpush_fail_flg = 1 if ("handpush_fail" in env) else 0
             autopush_succ_flg = 1 if ("autopush_succ" in env) else 0
             autopush_fail_flg = 1 if ("autopush_fail" in env) else 0
             
-            flg = (barksw_flg << 6) \
+            flg = (mailpushersw_flg << 7) \
+                | (barksw_flg << 6) \
                 | (schansw_flg << 5) \
                 | (wxpushersw_flg << 4) \
                 | (handpush_succ_flg << 3) \
@@ -199,8 +206,12 @@ class UserManagerHandler(BaseHandler):
         if user and user['role'] == "admin":
             adminflg = True
             users = []
-            for user in self.db.user.list(fields=('id','status', 'role', 'ctime', 'email', 'atime')):
+            for user in self.db.user.list(fields=('id','status', 'role', 'ctime', 'email', 'atime', 'email_verified')):
                 if user['role'] != 'admin':
+                    if (user['email_verified'] == 0):
+                        user['email_verified'] = False
+                    else:
+                        user['email_verified'] = True
                     users.append(user)
 
         self.render("user_manage.html", users=users, userid=userid, adminflg=adminflg)
@@ -248,6 +259,8 @@ class UserManagerHandler(BaseHandler):
             else:
                 raise Exception(u"非管理员，不可操作")
         except Exception as e:
+            if (str(e).find('get user need id or email') > -1):
+                e = u'请输入用户名/密码'
             self.render('tpl_run_failed.html', log=e)
             return
             
@@ -257,7 +270,11 @@ class UserManagerHandler(BaseHandler):
 class UserDBHandler(BaseHandler):
     @tornado.web.authenticated
     def get(self, userid):
-        self.render("DB_manage.html", userid=userid)
+        adminflg = False
+        user = self.db.user.get(userid, fields=('role'))
+        if user and user['role'] == "admin":
+            adminflg = True 
+        self.render("DB_manage.html", userid=userid, adminflg=adminflg)
         return
     
     @tornado.web.authenticated
@@ -285,13 +302,88 @@ class UserDBHandler(BaseHandler):
                         return
                     else:
                         raise Exception(u"管理员才能备份数据库") 
+
+                if ('backuptplsbtn' in envs):
+                    tpls = []
+                    for tpl in self.db.tpl.list(userid=userid, fields=('id', 'siteurl', 'sitename', 'banner', 'note','fork', 'groups', 'har', 'tpl', 'variables'), limit=None):
+                        tpl['tpl'] = self.db.user.decrypt(userid, tpl['tpl'])
+                        tpl['har'] = self.db.user.decrypt(userid, tpl['har'])
+                        tpls.append(tpl)
+
+                    tasks = []
+                    for task in self.db.task.list(userid, fields=('id', 'tplid', 'note', 'disabled', 'groups', 'init_env', 'env', 'ontimeflg', 'ontime', 'pushsw', 'newontime'), limit=None):
+                        task['init_env'] = self.db.user.decrypt(userid, task['init_env'])
+                        task['env'] = self.db.user.decrypt(userid, task['env']) if task['env'] else None
+                        tasks.append(task)
+
+                    backupdata = {}
+                    backupdata['tpls'] = tpls
+                    backupdata['tasks'] = tasks
+                    savename = "{mail}_{now}.json".format(mail = user['email'], now=now)
+                    fp = codecs.open(savename, 'w', 'utf-8')
+                    fp.write(json.dumps(backupdata, ensure_ascii=False, indent=4 ))
+                    fp.close()
+                    self.set_header ('Content-Type', 'application/octet-stream')
+                    self.set_header ('Content-Disposition', 'attachment; filename='+savename)
+                    with open(savename, 'rb') as f:
+                        while True:
+                            data = f.read(1024)
+                            if not data:
+                                break
+                            self.write(data)
+                    os.remove(savename)
+                    self.finish()
+                    return
+                    
+                if ('recoverytplsbtn' in envs):
+                    if ('recfile' in envs):
+                        tpls = json.loads(envs['recfile'][0])['tpls']
+                        tasks = json.loads(envs['recfile'][0])['tasks']
+                        ids = []
+                        for newtpl in tpls:
+                            userid2 = int(userid)
+                            har = self.db.user.encrypt(userid2, newtpl['har'])
+                            tpl = self.db.user.encrypt(userid2, newtpl['tpl'])
+                            variables = newtpl['variables']
+                            newid = self.db.tpl.add(userid2, har, tpl, variables)
+                            self.db.tpl.mod(newid, fork = newtpl['fork'],
+                                                siteurl = newtpl['siteurl'],
+                                                sitename = newtpl['sitename'],
+                                                note = newtpl['note'],
+                                                groups = u'备份还原',
+                                                banner = newtpl['banner']
+                                            )
+                            for task in tasks:
+                                if (task['tplid'] == newtpl['id']):
+                                    task['tplid'] = newid
+
+                        for newtask in tasks:
+                            userid2 = int(userid)
+                            newtask['init_env'] = self.db.user.encrypt(userid2, newtask['init_env'])
+                            newtask['env'] = self.db.user.encrypt(userid2, newtask['env'])
+                            taskid = self.db.task.add(newtask['tplid'], userid, newtask['env'])
+                            self.db.task.mod(taskid, disabled = newtask['disabled'],
+                                                     init_env = newtask['init_env'],
+                                                     session = None,
+                                                     note = newtask['note'],
+                                                     groups = u'备份还原',
+                                                     ontimeflg = newtask['ontimeflg'],
+                                                     ontime = newtask['ontime'],
+                                                     pushsw = newtask['pushsw'],
+                                                     newontime = newtask['newontime']
+                                            )
+
+                        self.render('tpl_run_success.html', log=u"设置完成")
+                        return
+                    else:
+                        raise Exception(u"请上传文件")
             else:
                 raise Exception(u"账号/密码错误")   
         except Exception as e:
+            if (str(e).find('get user need id or email') > -1):
+                e = u'请输入用户名/密码'
             self.render('tpl_run_failed.html', log=e)
             return
-            
-        self.redirect('/my/')
         return
      
 handlers = [

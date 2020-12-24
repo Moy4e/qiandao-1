@@ -1,5 +1,5 @@
 {% import "utils.html" as utils %}
-<form method="POST" action="/task/{{ taskid }}/group">
+<form method="POST" action="/tpl/{{ tplid }}/group">
   <h2 class="text-center">设置分组</h2>
   <hr>
 
@@ -7,7 +7,7 @@
     {% for group in groups %}
     <div class="checkbox">
       <label>
-        <input type="checkbox" name="{{ group }}"  {% if group == groupNow %}  checked="" {% endif %}> {{ group }} 
+        <input type="checkbox" name="{{ group }} "  {% if group == groupNow %}  checked="" {% endif %}> {{ group }} 
       </label>
     </div>
     {% endfor %}
@@ -24,7 +24,7 @@
 
   <div class="text-right">
     {% if current_user %}
-    <button id="send" data-method="POST" href="/task/{{ taskid }}/group" class="btn btn-primary">提交</button>
+    <button id="send" data-method="POST" href="/tpl/{{ tplid }}/group" class="btn btn-primary">提交</button>
     {% endif %}
   </div>
 

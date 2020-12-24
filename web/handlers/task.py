@@ -125,6 +125,13 @@ class TaskEditHandler(TaskNewHandler):
         user = self.current_user
         task = self.check_permission(self.db.task.get(taskid, fields=('id', 'userid',
             'tplid', 'disabled', 'note')), 'w')
+        task['init_env'] = self.db.user.decrypt(user['id'], self.db.task.get(taskid, 'init_env')['init_env'])
+        envs = []
+        for key, value in task['init_env'].items():
+            tmp = {'init_env_name':key}
+            tmp['data'] = value
+            envs.append(tmp)
+        task['init_env'] = envs
 
         tpl = self.check_permission(self.db.tpl.get(task['tplid'], fields=('id', 'userid', 'note',
             'sitename', 'siteurl', 'variables')))
@@ -140,7 +147,7 @@ class TaskRunHandler(BaseHandler):
 
         user = self.current_user
         task = self.check_permission(self.db.task.get(taskid, fields=('id', 'tplid', 'userid', 'init_env',
-            'env', 'session', 'last_success', 'last_failed', 'success_count',
+            'env', 'session', 'last_success', 'last_failed', 'success_count', 'note',
             'failed_count', 'last_failed_count', 'next', 'disabled', 'ontime', 'ontimeflg', 'pushsw','newontime')), 'w')
 
         tpl = self.check_permission(self.db.tpl.get(task['tplid'], fields=('id', 'userid', 'sitename',
@@ -172,7 +179,7 @@ class TaskRunHandler(BaseHandler):
         except Exception as e:
             if (notice['noticeflg'] & 0x4 != 0) and (taskpushsw['pushen']):
                 t = datetime.datetime.now().strftime('%m-%d %H:%M:%S')
-                title = u"签到任务 {0} 手动运行失败".format(tpl['sitename'])
+                title = u"签到任务 {0}-{1} 失败".format(tpl['sitename'], task['note'])
                 if pusher["barksw"]:
                     pushno2b.send2bark(title, u"{0} 请排查原因".format(e))
                 if pusher["schansw"]:
@@ -181,7 +188,7 @@ class TaskRunHandler(BaseHandler):
                     pushno2w.send2wxpusher(title+u"{0} 日志：{1}".format(t, e))
                 
             self.db.tasklog.add(task['id'], success=False, msg=unicode(e))
-            self.finish('<h1 class="alert alert-danger text-center">签到失败</h1><div class="well autowrap" id="errmsg">%s<button class="btn hljs-button" data-clipboard-target="#errmsg" >复制</button></div>' % e)
+            self.finish('<h1 class="alert alert-danger text-center">签到失败</h1><div class="showbut well autowrap" id="errmsg">%s<button class="btn hljs-button" data-clipboard-target="#errmsg" >复制</button></div>' % e)
             return
 
         self.db.tasklog.add(task['id'], success=True, msg=new_env['variables'].get('__log__'))
@@ -200,7 +207,7 @@ class TaskRunHandler(BaseHandler):
         
         if (notice['noticeflg'] & 0x8 != 0) and (taskpushsw['pushen']):
             t = datetime.datetime.now().strftime('%m-%d %H:%M:%S')
-            title = u"签到任务 {0} 手动运行成功".format(tpl['sitename'])
+            title = u"签到任务 {0}-{1} 成功".format(tpl['sitename'], task['note'])
             if pusher["barksw"]:
                 pushno2b.send2bark(title, u"{0} 成功".format(t))
             if pusher["schansw"]:
@@ -210,6 +217,10 @@ class TaskRunHandler(BaseHandler):
         
         self.db.tpl.incr_success(tpl['id'])
         self.finish('<h1 class="alert alert-success text-center">签到成功</h1>')
+        logDay = int(self.db.site.get(1, fields=('logDay'))['logDay'])
+        for log in self.db.tasklog.list(taskid = taskid, fields=('id', 'ctime')):
+            if (time.time() - log['ctime']) > (logDay * 24 * 60 * 60):
+                self.db.tasklog.delete(log['id'])
         return
 
 class TaskLogHandler(BaseHandler):
@@ -230,6 +241,22 @@ class TaskLogDelHandler(BaseHandler):
         tasklog = self.db.tasklog.list(taskid = taskid, fields=('id', 'success', 'ctime', 'msg'))
         for log in tasklog:
             self.db.tasklog.delete(log['id'])
+        tasklog = self.db.tasklog.list(taskid = taskid, fields=('id', 'success', 'ctime', 'msg'))
+
+        self.redirect("/task/{0}/log".format(taskid))
+        return
+
+    @tornado.web.authenticated
+    def post(self, taskid):
+        user = self.current_user
+        body_arguments = self.request.body_arguments
+        day = 365
+        if ('day' in body_arguments):
+            day = int(json.loads(body_arguments['day'][0]))
+        tasklog = self.db.tasklog.list(taskid = taskid, fields=('id', 'success', 'ctime', 'msg'))
+        for log in tasklog:
+            if (time.time() - log['ctime']) > (day * 24 * 60 * 60):
+                self.db.tasklog.delete(log['id'])
         tasklog = self.db.tasklog.list(taskid = taskid, fields=('id', 'success', 'ctime', 'msg'))
 
         self.redirect("/task/{0}/log".format(taskid))
@@ -347,8 +374,47 @@ class TaskGroupHandler(TaskNewHandler):
                     target_group = 'None'
             
         self.db.task.mod(taskid, groups=target_group)
-   
+
         self.redirect('/my/')
+        
+class TasksDelHandler(BaseHandler):
+    @tornado.web.authenticated
+    def post(self, userid):
+        try:
+            user = self.current_user
+            body_arguments = self.request.body_arguments
+            if ('taskids' in body_arguments):
+                taskids = json.loads(self.request.body_arguments['taskids'][0])
+            if (body_arguments['func'][0] == 'Del'):
+                for taskid in taskids:
+                    task = self.check_permission(self.db.task.get(taskid, fields=('id', 'userid', )), 'w')
+                    logs = self.db.tasklog.list(taskid = taskid, fields=('id'))
+                    for log in logs:
+                        self.db.tasklog.delete(log['id'])
+                    self.db.task.delete(taskid)
+            elif (body_arguments['func'][0] == 'setGroup'):
+                New_group = body_arguments['groupValue'][0].strip().decode("utf-8").encode("utf-8")
+                if(New_group == ''):
+                    New_group = u'None'
+                for taskid in taskids:
+                    self.db.task.mod(taskid, groups=New_group)
+                    
+            self.finish('<h1 class="alert alert-success text-center">操作成功</h1>')
+        except Exception as e:
+            self.render('tpl_run_failed.html', log=str(e))
+            return
+
+class GetGroupHandler(TaskNewHandler):
+    @tornado.web.authenticated
+    def get(self, taskid):
+        user = self.current_user      
+        groups = {}
+        for task in self.db.task.list(user['id'], fields=('groups'), limit=None):
+            groups[task['groups']] = ""
+        
+        self.write(json.dumps(groups, ensure_ascii=False, indent=4))
+        return
+
         
         
 handlers = [
@@ -361,4 +427,6 @@ handlers = [
         ('/task/(\d+)/log/del', TaskLogDelHandler),
         ('/task/(\d+)/run', TaskRunHandler),
         ('/task/(\d+)/group', TaskGroupHandler),
+        ('/tasks/(\d+)', TasksDelHandler), 
+        ('/getgroups/(\d+)', GetGroupHandler), 
         ]
